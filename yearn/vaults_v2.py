@@ -1,35 +1,11 @@
 from dataclasses import dataclass
 from typing import List
 
-from brownie import interface
 from brownie.network.contract import Contract, InterfaceContainer
-from packaging import version
 
-from yearn import strategies
-from yearn import uniswap
+from yearn import strategies, uniswap
 from yearn.events import fetch_events
 from yearn.mutlicall import fetch_multicall
-
-
-ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-MIN_VERSION = version.parse("0.2.0")
-VAULT_VIEWS = [
-    "decimals",
-    "totalAssets",
-    "maxAvailableShares",
-    "pricePerShare",
-    "debtOutstanding",
-    "creditAvailable",
-    "expectedReturn",
-    "totalSupply",
-    "emergencyShutdown",
-    "depositLimit",
-    "debtRatio",
-    "totalDebt",
-    "lastReport",
-    "managementFee",
-    "performanceFee",
-]
 
 VAULT_VIEWS_SCALED = [
     "totalAssets",
@@ -39,8 +15,10 @@ VAULT_VIEWS_SCALED = [
     "creditAvailable",
     "expectedReturn",
     "totalSupply",
+    "availableDepositLimit",
     "depositLimit",
     "totalDebt",
+    "debtLimit",
 ]
 
 
@@ -52,19 +30,25 @@ class VaultV2:
     strategies: List[strategies.Strategy]
 
     def __post_init__(self):
-        api_version = version.parse(self.vault.apiVersion())
-        assert api_version >= MIN_VERSION, f"{self.name} unsupported vault api version {api_version}"
+        # mutlicall-safe views with 0 inputs and numeric output.
+        self._views = [
+            x["name"]
+            for x in self.vault.abi
+            if x["type"] == "function"
+            and x["stateMutability"] == "view"
+            and not x["inputs"]
+            and x["outputs"][0]["type"] == "uint256"
+        ]
 
     def describe(self):
         scale = 10 ** self.vault.decimals()
-        strats = [str(strat.strategy) for strat in self.strategies]
-        strats.extend([ZERO_ADDRESS] * (40 - len(strats)))
         try:
-            results = fetch_multicall(*[[self.vault, view] for view in VAULT_VIEWS])
-            info = dict(zip(VAULT_VIEWS, results))
-            for name in VAULT_VIEWS_SCALED:
-                info[name] /= scale
-            info['strategies'] = {}
+            results = fetch_multicall(*[[self.vault, view] for view in self._views])
+            info = dict(zip(self._views, results))
+            for name in info:
+                if name in VAULT_VIEWS_SCALED:
+                    info[name] /= scale
+            info["strategies"] = {}
         except ValueError as e:
             info = {"strategies": {}}
         for strat in self.strategies:
